@@ -1,0 +1,1 @@
+plt.legend(loc='upper left')
