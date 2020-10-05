@@ -53,29 +53,84 @@ import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
+import torch.nn.functional as F
 
-AE_TYPE='ae'
+reconstruction_function = nn.BCELoss(size_average=False)  # mse loss
+
+AE_TYPE='vae'
+def loss_function(recon_x, x, mu, logvar):
+    """
+    recon_x: generating vec
+    x: origin vec
+    mu: latent mean
+    logvar: latent log variance
+    """
+    BCE = reconstruction_function(recon_x, x)
+    # loss = 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+    KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
+    KLD = torch.sum(KLD_element).mul_(-0.5)
+    # KL divergence
+    return BCE + KLD
 
 # Creating the architecture of the Neural Network
+# class AE(nn.Module):
+    # def __init__(self, column_len, len1, len2,AE_TYPE):
+    #     super(AE, self).__init__()
+
+    #     self.fc1=nn.Linear(column_len,len1)
+    #     self.fc21=nn.Linear(len1,len2)
+    #     self.fc22=nn.Linear(len1,len2)
+    #     self.fc3=nn.Linear(len2,len1)
+    #     self.fc4=nn.Linear(len1,column_len)
+#     def encode(self,x):
+#         h1=F.relu(self.fc1(x),inplace=False)
+#         return self.fc21(h1),self.fc22(h1)
+#     def decode(self,x):
+#         h3=F.relu(self.fc3(x),inplace=False)
+#         return F.sigmoid(self.fc4(h3))
+#     def reparametrize(self,u,logvar):
+#         std = logvar.mul(0.5).exp_()
+#         if torch.cuda.is_available():
+#             eps = torch.cuda.FloatTensor(std.size()).normal_()
+#         else:
+#             eps = torch.FloatTensor(std.size()).normal_()
+#         eps = Variable(eps)
+#         return eps.mul(std).add_(u)
+#     def forward(self, x):
+#         u,logvar = self.encode(x)
+#         z=self.reparametrize(u,logvar)
+#         return self.decode(z)
 class AE(nn.Module):
     def __init__(self, column_len, len1, len2,AE_TYPE):
         super(AE, self).__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(column_len, len1),
-            nn.ReLU(inplace=True),
-            nn.Linear(len1,len2),
-            nn.ReLU(inplace=True)
-            )
-        self.decoder = nn.Sequential(
-            nn.Linear(len2,len1),
-            nn.ReLU(inplace=True),
-            nn.Linear(len1,column_len),
-            )
+
+        self.fc1=nn.Linear(column_len,len1)
+        self.fc21=nn.Linear(len1,len2)
+        self.fc22=nn.Linear(len1,len2)
+        self.fc3=nn.Linear(len2,len1)
+        self.fc4=nn.Linear(len1,column_len)
+
+    def encode(self, x):
+        h1 = F.relu(self.fc1(x),inplace=False)
+        return self.fc21(h1), self.fc22(h1)
+
+    def reparametrize(self, mu, logvar):
+        std = logvar.mul(0.5).exp_()
+        if torch.cuda.is_available():
+            eps = torch.cuda.FloatTensor(std.size()).normal_()
+        else:
+            eps = torch.FloatTensor(std.size()).normal_()
+        eps = Variable(eps)
+        return eps.mul(std).add_(mu)
+
+    def decode(self, z):
+        h3 = F.relu(self.fc3(z),inplace=False)
+        return F.sigmoid(self.fc4(h3))
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        mu, logvar = self.encode(x)
+        z = self.reparametrize(mu, logvar)
+        return self.decode(z)
 
 def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
     global data
@@ -107,17 +162,25 @@ def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
             epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double()).cuda()
             ae.double()
             outputs=ae(epoch.double())
-            for index in mark_null:
-                outputs[index]=0
-            loss = criterion(outputs, epoch)
-            loss=torch.sqrt(loss)
-            # print(loss)
-            # rmse
-            LOSS+=loss
-            # loss = torch.sqrt(criterion(outputs,epoch))
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # outputs=list(outputs)
+            if(len(mark_null)!=0):
+                # print(outputs)
+                outputs=torch.tensor(list(outputs),requires_grad=True).cuda()              
+                # print(outputs)
+                # print(mark_null)
+                for index in mark_null:
+                    outputs[index]=0
+                # print(type(outputs),type(epoch))
+                # print("----------------\n")
+                loss = criterion(outputs, epoch)
+                loss=torch.sqrt(loss)
+                # print(loss)
+                # rmse
+                LOSS=LOSS+loss
+                # loss = torch.sqrt(criterion(outputs,epoch))
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
         if(LOSS<best_loss):
             best_loss=LOSS
             bestterm=terms
@@ -147,11 +210,12 @@ def train(ae,criterion,optimizer,len1,len2,op="RMS"):
             outputs=ae(epoch.double())
             for index in mark_null:
                 outputs[index]=0
+            print(outputs,epoch)
             loss = criterion(outputs, epoch)
             loss=torch.sqrt(loss)
             # print(loss)
             # rmse
-            LOSS+=loss
+            LOSS=LOSS+loss
             # loss = torch.sqrt(criterion(outputs,epoch))
             optimizer.zero_grad()
             loss.backward()
@@ -193,6 +257,7 @@ def test(len1,len2,printf,op="RMS"):
         newpre=copy.deepcopy(epoch)
         for i in mark_null:
             newpre[i]=int(pre[i]) if pre[i]>0 else 0
+            
             if(x_train.columns[i]=='sex'):
                 if newpre[i]>1:
                     newpre[i]= 1 
@@ -211,15 +276,15 @@ def test(len1,len2,printf,op="RMS"):
             # print(newpre)
             # print(torch.tensor(y_test.values[index]))
             print("#######################")
-        cal+=loss
-        mark_loss_num+=len(mark_null)
+        cal=cal+loss
+        mark_loss_num=mark_loss_num+len(mark_null)
     # print(mark_loss_num)
     print(len1,len2,cal/mark_loss_num)
     # 10 8 193
     print("----------")
     # input()
     return float(cal/mark_loss_num)
-def best_test(op="RMS"):   
+def best_test(op="RMS"):
     best_len1=5
     best_len2=10
     best_loss=999999999999.
@@ -236,18 +301,12 @@ def run():
     global res
     for i in range(20):
         len1,len2,best_loss=best_test("Adam")
-        res+=best_loss
+        res=res+best_loss
         # len1=12
         # len2=9
         # import os
         # os.system("cls")
         test(len1,len2,True)
-    print("avgloss:",res/20)
+    print("avgloss:",res/10)
     # print("best:",len1,len2)
 run()
-# AE
-# 12 9 1.3161  MAE RMS
-# 8 7 4.1190/3.9806 RMSE RMS
-
-# 9 5  RMSE Adam 3.8411474624303423
-# 7 6  RMSE RMS  6.7134
