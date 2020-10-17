@@ -3,22 +3,9 @@ import numpy as np
 import joblib
 import random
 import copy
-def generate_null(data,percents=5):
-    # 生成NA数据(5%)
-    for index, row in data.iterrows():
-        for feature_name in data.iteritems():
-            if(random.randint(0,100)<percents):
-                data.at[index,feature_name[0]]=None
-    return data
+from get_data import get_data
 
-data=pd.read_csv("./heart.csv")
-data=data.drop('target',axis=1)
-compare_data=copy.deepcopy(data)
-data=generate_null(data)
-from sklearn.model_selection import train_test_split
-x_train, x_test, y_train, y_test = train_test_split(data,compare_data,random_state=0)
-len_train=len(x_train)
-len_test=len(x_test)
+data,compare_data=get_data()
 # miss_data=data[data.isnull().values==True]
 # # miss_data=data[data.isnull().values==True].drop("id",axis=1)
 
@@ -77,12 +64,12 @@ class AE(nn.Module):
         x = self.decoder(x)
         return x
 
-def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
-    global data
+def best_train(len1,len2,data,compare_data,op="RMS"):
+    #global data,compare_data
     criterion = nn.MSELoss()
     
     # criterion=nn.L1Loss()
-    ae = AE(len(data.columns),len1,len2,AE_TYPE).cuda()
+    ae = AE(len(data.columns),len1,len2,AE_TYPE)
     if op == "RMS":
         optimizer = optim.RMSprop(ae.parameters(), lr = 0.01, weight_decay = 0.5)
     elif op == "Adam":
@@ -92,7 +79,7 @@ def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
     for terms in range(1,18):
         # input()
         LOSS=0
-        for epoch in x_train.values:
+        for epoch in data.values:
             # mark the null position
             mark_null=[]
             for index,v in enumerate(epoch):
@@ -104,7 +91,7 @@ def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
             # print(mark_null)
             # train
             from torch.autograd import Variable
-            epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double()).cuda()
+            epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double())
             ae.double()
             outputs=ae(epoch.double())
             for index in mark_null:
@@ -124,13 +111,14 @@ def best_train(len1,len2,x_train, x_test, y_train, y_test,op="RMS"):
     return bestterm+1
 
 def train(ae,criterion,optimizer,len1,len2,op="RMS"):
-    global data,x_train, x_test, y_train, y_test
-    bestterm=best_train(len1,len2,x_train.copy(), x_test.copy(), y_train.copy(), y_test.copy(),op)
+    # global data,compare_data
+    # bestterm=best_train(len1,len2,data.copy(),compare_data.copy(),op)
+    bestterm=10
     print(bestterm)
     for terms in range(bestterm):
         # input()
         LOSS=0
-        for epoch in x_train.values:
+        for epoch in data.values:
             # mark the null position
             mark_null=[]
             for index,v in enumerate(epoch):
@@ -142,7 +130,7 @@ def train(ae,criterion,optimizer,len1,len2,op="RMS"):
             # print(mark_null)
             # train
             from torch.autograd import Variable
-            epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double()).cuda()
+            epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double())
             ae.double()
             outputs=ae(epoch.double())
             for index in mark_null:
@@ -156,29 +144,25 @@ def train(ae,criterion,optimizer,len1,len2,op="RMS"):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-def test(len1,len2,printf,op="RMS"):
+    return ae
+def ae(len1,len2,data,op="RMS"):
     criterion = nn.MSELoss()
     # criterion=nn.L1Loss()
     # criterion=nn.CrossEntropyLoss()
-    ae = AE(len(data.columns),len1,len2,AE_TYPE).cuda()
+    ae = AE(len(data.columns),len1,len2,AE_TYPE)
     if op == "RMS":
         optimizer = optim.RMSprop(ae.parameters(), lr = 0.01, weight_decay = 0.5)
     elif op == "Adam":
-        optimizer = optim.Adam(ae.parameters(),lr=0.1, weight_decay=0.5)    
-    train(ae,criterion,optimizer,len1,len2,op)
-    
+        optimizer = optim.Adam(ae.parameters(),lr=0.1, weight_decay=0.5)  
+    ae=train(ae,criterion,optimizer,len1,len2,op)
 
     # 查看参数
     # for name, param in ae.named_parameters():
     #     print(name,param)
     # input()
 
-    # 计算损失
-    cal=0
-    # 统一填充0
-    # x_test=x_test.fillna(0)
-    mark_loss_num=0
-    for index,epoch in enumerate(x_test.copy().values):
+    d=data.copy()
+    for index,epoch in enumerate(data.copy().values):
         # 标记缺失位置
         mark_null=[]
         for i,v in enumerate(epoch):
@@ -186,68 +170,160 @@ def test(len1,len2,printf,op="RMS"):
                 mark_null.append(i)
                 epoch[i]=0
         
-        epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double()).cuda()
+        epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double())
         ae.double()
+        #epoch=torch.from_numpy(epoch.astype(np.double)).double()
         pre=ae(epoch.double())
+        d.values[index]=pre.detach().numpy()
+    from pandas import DataFrame
+    d=DataFrame(d,index=data.index,columns=data.columns)
+    for index,col in enumerate(d):
+        # print(data[col].dtype)
+        d[col]=d[col].astype(str(data[col].dtype))
+    return d
+def test(len1,len2,data,op="RMS"):
+    criterion = nn.MSELoss()
+    # criterion=nn.L1Loss()
+    # criterion=nn.CrossEntropyLoss()
+    ae = AE(len(data.columns),len1,len2,AE_TYPE)
+    if op == "RMS":
+        optimizer = optim.RMSprop(ae.parameters(), lr = 0.01, weight_decay = 0.5)
+    elif op == "Adam":
+        optimizer = optim.Adam(ae.parameters(),lr=0.1, weight_decay=0.5)  
+    ae=train(ae,criterion,optimizer,len1,len2,op)
 
-        newpre=copy.deepcopy(epoch)
-        for i in mark_null:
-            newpre[i]=int(pre[i]) if pre[i]>0 else 0
-            if(x_train.columns[i]=='sex'):
-                if newpre[i]>1:
-                    newpre[i]= 1 
-            
-        loss=criterion(newpre,torch.tensor(y_test.values[index]).cuda())
-        loss=torch.sqrt(loss)
-        # print(epoch)
-        # print(pre)
-        # print(torch.tensor(y_test.values[index]))
-        # print("loss:",loss)
-        if(len(mark_null)!=0 and printf):
-            # print(torch.tensor(x_test.values[index]))
-            for i in mark_null:
-                print(x_train.columns[i],": ",float(newpre[i]),y_test.values[index][i])
-            # print(mark_null)
-            # print(newpre)
-            # print(torch.tensor(y_test.values[index]))
-            print("#######################")
-        cal+=loss
-        mark_loss_num+=len(mark_null)
-    # print(mark_loss_num)
-    print(len1,len2,cal/mark_loss_num)
-    # 10 8 193
-    print("----------")
+    # 查看参数
+    # for name, param in ae.named_parameters():
+    #     print(name,param)
     # input()
-    return float(cal/mark_loss_num)
+
+    d=data.copy()
+    for index,epoch in enumerate(data.copy().values):
+        # 标记缺失位置
+        mark_null=[]
+        for i,v in enumerate(epoch):
+            if(np.isnan(v)):
+                mark_null.append(i)
+                epoch[i]=0
+        
+        epoch=Variable(torch.from_numpy(epoch.astype(np.double)).double())
+        ae.double()
+        #epoch=torch.from_numpy(epoch.astype(np.double)).double()
+        pre=ae(epoch.double())
+        d.values[index]=pre.detach().numpy()
+    return d
+
+from RMSE import rmse
+
 def best_test(op="RMS"):   
     best_len1=5
     best_len2=10
     best_loss=999999999999.
     for len2 in range(5,10):
         for len1 in range(len2+1,len(data.columns)):
-            t_loss=test(len1,len2,False,op)
+            d=test(len1,len2,data,op)
+            # print(d)
+            for col in compare_data.columns:
+                d[col]=d[col].astype(str(compare_data[col].dtype))
+            #print(d)
+            # input()
+            t_loss=rmse(d,compare_data)
             if(float(t_loss)<best_loss):
                 best_len1=len1
                 best_len2=len2
                 best_loss=t_loss
     return best_len1,best_len2,best_loss
-res=0
+
 def run():
-    global res
-    for i in range(20):
+    from params import j,term
+    res=0
+    for i in range(term):
+        data,compare_data,_=get_data()
         len1,len2,best_loss=best_test("Adam")
         res+=best_loss
+        print("len:",len1,len2)
         # len1=12
         # len2=9
         # import os
         # os.system("cls")
-        test(len1,len2,True)
-    print("avgloss:",res/20)
+        # test(len1,len2,True)
+    print("avgloss:",res/term)
     # print("best:",len1,len2)
-run()
+if __name__ == "__main__":
+  run()
 # AE
 # 12 9 1.3161  MAE RMS
 # 8 7 4.1190/3.9806 RMSE RMS
 
+# 8 6  RMSE Adam 3.456758494016127
 # 9 5  RMSE Adam 3.8411474624303423
 # 7 6  RMSE RMS  6.7134
+
+# 5% 3.8899614968041343
+# 20% 4.085027844100423
+
+
+
+def missing_method(raw_data, mechanism='mcar', method='uniform') :
+    data = raw_data.copy()
+    rows, cols = data.shape
+    # missingness threshold
+    t = 0.2
+    if mechanism == 'mcar' :    
+        if method == 'uniform' :
+            # uniform random vector
+            v = np.random.uniform(size=(rows, cols))
+            # missing values where v<=t
+            mask = (v<=t)
+            data[mask] = 0
+        elif method == 'random' :
+            # only half of the attributes to have missing value
+            missing_cols = np.random.choice(cols, cols//2)
+            c = np.zeros(cols, dtype=bool)
+            c[missing_cols] = True
+            # uniform random vector
+            v = np.random.uniform(size=(rows, cols))
+            # missing values where v<=t
+            mask = (v<=t)*c
+            data[mask] = 0
+        else :
+            print("Error : There are no such method")
+            raise
+    elif mechanism == 'mnar' :        
+        if method == 'uniform' :
+            # randomly sample two attributes
+            sample_cols = np.random.choice(cols, 2)
+            # calculate ther median m1, m2
+            m1, m2 = np.median(data[:,sample_cols], axis=0)
+            # uniform random vector
+            v = np.random.uniform(size=(rows, cols))
+            # missing values where (v<=t) and (x1 <= m1 or x2 >= m2)
+            m1 = data[:,sample_cols[0]] <= m1
+            m2 = data[:,sample_cols[1]] >= m2
+            m = (m1*m2)[:, np.newaxis]
+            mask = m*(v<=t)
+            data[mask] = 0
+        elif method == 'random' :
+            # only half of the attributes to have missing value
+            missing_cols = np.random.choice(cols, cols//2)
+            c = np.zeros(cols, dtype=bool)
+            c[missing_cols] = True
+            # randomly sample two attributes
+            sample_cols = np.random.choice(cols, 2)
+            # calculate ther median m1, m2
+            m1, m2 = np.median(data[:,sample_cols], axis=0)
+            # uniform random vector
+            v = np.random.uniform(size=(rows, cols))
+            # missing values where (v<=t) and (x1 <= m1 or x2 >= m2)
+            m1 = data[:,sample_cols[0]] <= m1
+            m2 = data[:,sample_cols[1]] >= m2
+            m = (m1*m2)[:, np.newaxis]
+            mask = m*(v<=t)*c
+            data[mask] = 0
+        else :
+            print("Error : There is no such method")
+            raise
+    else :
+        print("Error : There is no such mechanism")
+        raise
+    return data, mask
